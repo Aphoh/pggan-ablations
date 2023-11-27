@@ -26,6 +26,7 @@ def setup(rank, world_size):
     os.environ["MASTER_PORT"] = "12355"
 
     # initialize the process group
+    print(f"Running DDP setup on rank:{rank}/{world_size}")
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 
@@ -55,20 +56,23 @@ def get_dataloader(cfg, dataset, device, epoch, sched, sampler):
         )
 
 
-def get_checkpoint_dict(cfg, G_net, D_net, G_optimizer, D_optimizer, fixed_noise):
+def get_checkpoint_dict(cfg, model, optimizer, fixed_noise):
     if cfg.ddp:
-        G_net = G_net.module
-        D_net = D_net.module
+        model = model.module
     return {
-        "G_net": G_net.state_dict(),
-        "G_optimizer": G_optimizer.state_dict(),
-        "D_net": D_net.state_dict(),
-        "D_optimizer": D_optimizer.state_dict(),
+        "model": model,
+        "optimizer": optimizer,
         "fixed_noise": fixed_noise,
-        "depth": G_net.depth,
-        "alpha": G_net.alpha,
-        "alpha_step": G_net.alpha_step,
+        "depth": model.G_net.depth,
+        "alpha": model.G_net.alpha,
+        "alpha_step": model.G_net.alpha_step,
     }
+
+
+def get_model(cfg, model):
+    if cfg.ddp:
+        model = model.module
+    return model
 
 
 def get_sched_for_epoch(cfg, epoch):
@@ -84,11 +88,56 @@ def get_sched_for_epoch(cfg, epoch):
     return cfg.schedule[idxs[-1]] if len(idxs) > 0 else cfg.schedule[-1]
 
 
+class Wrapper(nn.Module):
+    def __init__(self, G_net, D_net, latent_size, lambd):
+        super().__init__()
+        self.latent_size = latent_size
+        self.lambd = lambd
+        self.G_net = G_net
+        self.D_net = D_net
+
+    def train_G(self, samples):
+        noise = torch.randn(
+            samples.size(0), self.latent_size, 1, 1, device=samples.device
+        )
+        fake = self.G_net(noise)
+        fake_out = self.D_net(fake)
+
+        G_loss = -fake_out.mean()
+        return G_loss
+
+    def train_D(self, samples):
+        noise = torch.randn(
+            samples.size(0), self.latent_size, 1, 1, device=samples.device
+        )
+        fake = self.G_net(noise).detach()  # detach is super important here
+        fake_out = self.D_net(fake)
+        real_out = self.D_net(samples)
+
+        ## Gradient Penalty
+        eps = torch.rand(samples.size(0), 1, 1, 1, device=samples.device)
+        eps = eps.expand_as(samples)
+        x_hat = eps * samples + (1 - eps) * fake
+        x_hat.requires_grad = True
+        px_hat = self.D_net(x_hat)
+        grad = torch.autograd.grad(
+            outputs=px_hat.sum(), inputs=x_hat, create_graph=True
+        )[0]
+        grad_norm = grad.view(samples.size(0), -1).norm(2, dim=1)
+        gradient_penalty = self.lambd * ((grad_norm - 1) ** 2).mean()
+
+        ## Final Loss
+        return fake_out.mean() - real_out.mean() + gradient_penalty
+
+    def growing_net(self, num_iters):
+        self.G_net.growing_net(num_iters)
+        self.D_net.growing_net(num_iters)
+
+
 def main(rank, world_size, cfg):
     """
     Main training loop. When ddp is disabled, rank is 0 and world_size is 1.
     """
-    print(f"Running DDP setup on rank:{rank}/{world_size}")
     if cfg.cuda:
         torch.cuda.set_device(rank)
     device = f"cuda:{rank}" if cfg.cuda else "cpu"
@@ -122,15 +171,21 @@ def main(rank, world_size, cfg):
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ]
     )
-    D_net = Discriminator(latent_size, out_res).to(device)
-    G_net = Generator(latent_size, out_res).to(device)
+    model = Wrapper(
+        Generator(latent_size, out_res),
+        Discriminator(latent_size, out_res),
+        latent_size,
+        lambd,
+    ).to(device)
 
     fixed_noise = torch.randn(16, latent_size, 1, 1, device=device)
-    D_optimizer = optim.Adam(D_net.parameters(), lr=lr, betas=(0, 0.99))
-    G_optimizer = optim.Adam(G_net.parameters(), lr=lr, betas=(0, 0.99))
+    optimizer = optim.Adam(  # separate adam for each network
+        [{"params": model.G_net.parameters()}, {"params": model.D_net.parameters()}],
+        lr=lr,
+        betas=(0, 0.99),
+    )
 
-    D_running_loss = 0.0
-    G_running_loss = 0.0
+    D_running_loss, G_running_loss = 0, 0
     iter_num = 0
 
     # Looks like checkpoint is a pickled dict with a bunch of interesting information
@@ -141,20 +196,18 @@ def main(rank, world_size, cfg):
             map_location=map_location,
         )  # Expects per epoch saves in a given location
         fixed_noise = check_point["fixed_noise"]
-        G_net.load_state_dict(check_point["G_net"])
-        D_net.load_state_dict(check_point["D_net"])
-        G_optimizer.load_state_dict(check_point["G_optimizer"])
-        D_optimizer.load_state_dict(check_point["D_optimizer"])
-        G_net.depth = check_point["depth"]
-        D_net.depth = check_point["depth"]
-        G_net.alpha = check_point["alpha"]
-        D_net.alpha = check_point["alpha"]
-        G_net.alpha_step = check_point["alpha_step"]
-        D_net.alpha_step = check_point["alpha_step"]
+        model.G_net.load_state_dict(check_point["G_net"])
+        model.D_net.load_state_dict(check_point["D_net"])
+        optimizer.load_state_dict(check_point["optimizer"])
+        model.G_net.depth = check_point["depth"]
+        model.D_net.depth = check_point["depth"]
+        model.G_net.alpha = check_point["alpha"]
+        model.D_net.alpha = check_point["alpha"]
+        model.G_net.alpha_step = check_point["alpha_step"]
+        model.D_net.alpha_step = check_point["alpha_step"]
 
     if cfg.ddp:  # Do this _after_ loading the checkpoint from resume
-        D_net = DDP(D_net, device_ids=[rank], find_unused_parameters=True)
-        G_net = DDP(G_net, device_ids=[rank], find_unused_parameters=True)
+        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     dataset = datasets.ImageFolder(data_dir, transform=transform)
     sampler = (
@@ -164,112 +217,96 @@ def main(rank, world_size, cfg):
         cfg, dataset, device, 1 + cfg.resume, curr_sched, sampler
     )
     log_every = max(1, len(data_loader) // 100)  # log 100 times per epoch
-    size = 2 ** (G_net.depth + 1)
-    print(f"Output Resolution: {size}x{size}")
+    size = 2 ** (get_model(cfg, model).G_net.depth + 1)
+    if rank == 0:
+        print(f"Output Resolution: {size}x{size}")
 
     for epoch in range(1 + cfg.resume, cfg.epochs + 1):
-        G_net.train()
+        model.train()
         curr_sched = get_sched_for_epoch(cfg, epoch)
-        print(f"epoch {epoch}/{num_epochs} schedule: {curr_sched}")
+        if rank == 0:
+            print(f"epoch {epoch}/{num_epochs} schedule: {curr_sched}")
         data_loader = get_dataloader(cfg, dataset, device, epoch, curr_sched, sampler)
         log_every = max(1, len(data_loader) // 100)  # log 100 times per epoch
-        if epoch == curr_sched.start_epoch and 2 ** (G_net.depth + 1) < out_res:
+        if (
+            epoch == curr_sched.start_epoch
+            and 2 ** (get_model(cfg, model).G_net.depth + 1) < out_res
+        ):
             # if this epoch is the start of a schedule
             # and increasing depth is still less than the output size
             if curr_sched.grow_epochs:  # this should be none for the first schedule
                 assert epoch != 1, "The first epoch should have no grow_epochs"
-                G_net.growing_net(curr_sched.grow_epochs * len(data_loader))
-                D_net.growing_net(curr_sched.grow_epochs * len(data_loader))
-                size = 2 ** (G_net.depth + 1)
+                get_model(cfg, model).growing_net(
+                    curr_sched.grow_epochs * len(data_loader)
+                )
+                # TODO: delete
+                model.G_net.growing_net(curr_sched.grow_epochs * len(data_loader))
+                model.D_net.growing_net(curr_sched.grow_epochs * len(data_loader))
+                size = 2 ** (get_model(cfg, model).depth + 1)
             else:
                 assert epoch == 1, "Only the first schedule should have no grow_epochs"
-            print(f"Output Resolution: {size}x{size}")
+            if rank == 0 and epoch != 1:
+                print(f"Output Resolution: {size}x{size}")
 
-        databar = tqdm(data_loader)
+        databar = tqdm(data_loader) if rank == 0 else data_loader
         for i, samples in enumerate(databar):
-            ##  update D
             samples = samples[0].to(device)
             if size != out_res:
-                samples = F.interpolate(samples[0], size=size)
+                samples = F.interpolate(samples, size=size)
             else:
-                samples = samples[0].to(device)
-            D_net.zero_grad()
-            noise = torch.randn(samples.size(0), latent_size, 1, 1, device=device)
-            fake = G_net(noise)
-            fake_out = D_net(fake.detach())
-            real_out = D_net(samples)
+                samples = samples.to(device)
 
-            ## Gradient Penalty
-
-            eps = torch.rand(samples.size(0), 1, 1, 1, device=device)
-            eps = eps.expand_as(samples)
-            x_hat = eps * samples + (1 - eps) * fake.detach()
-            x_hat.requires_grad = True
-            px_hat = D_net(x_hat)
-            grad = torch.autograd.grad(
-                outputs=px_hat.sum(), inputs=x_hat, create_graph=True
-            )[0]
-            grad_norm = grad.view(samples.size(0), -1).norm(2, dim=1)
-            gradient_penalty = lambd * ((grad_norm - 1) ** 2).mean()
-
-            ###########
-
-            D_loss = fake_out.mean() - real_out.mean() + gradient_penalty
-
+            ##  update D
+            model.zero_grad()
+            D_loss = get_model(cfg, model).train_D(samples)
             D_loss.backward()
-            D_optimizer.step()
-
-            ##	update G
-
-            G_net.zero_grad()
-            fake_out = D_net(fake)
-
-            G_loss = -fake_out.mean()
-
+            get_model(cfg, model).G_net.zero_grad()  # just in case, no grads for G
+            optimizer.step()
+            ## update G
+            model.zero_grad()
+            G_loss = get_model(cfg, model).train_G(samples)
             G_loss.backward()
-            G_optimizer.step()
+            optimizer.step()
 
-            ##############
-
-            D_running_loss += D_loss.item()
-            G_running_loss += G_loss.item()
+            D_running_loss += D_loss.detach()
+            G_running_loss += G_loss.detach()
 
             iter_num += 1
-
             if i % log_every == 0 and rank == 0:
-                if cfg.ddp:
-                    D_running_loss = dist.reduce(D_running_loss, dst=0, op=ReduceOp.AVG)
-                    G_running_loss = dist.reduce(G_running_loss, dst=0, op=ReduceOp.AVG)
-                D_running_loss /= iter_num
-                G_running_loss /= iter_num
+                # if cfg.ddp:
+                # dist.reduce(D_running_loss, dst=0, op=ReduceOp.SUM)
+                # dist.reduce(G_running_loss, dst=0, op=ReduceOp.SUM)
+                print(D_running_loss, G_running_loss)
+                d_loss = D_running_loss.item() / (iter_num)  # * world_size)
+                g_loss = G_running_loss.item() / (iter_num)  # * world_size)
                 databar.set_postfix(
                     {
-                        "d_loss": f"{D_running_loss:.3f}",
-                        "g_loss": f"{G_running_loss:.3f}",
+                        "d_loss": f"{d_loss:.3f}",
+                        "g_loss": f"{g_loss:.3f}",
                     }
                 )
                 iter_num = 0
                 D_running_loss, G_running_loss = 0.0, 0.0
+                print(f"rank{rank} finished all my stuff")
 
         if rank == 0:
-            check_point = get_checkpoint_dict(
-                cfg, G_net, D_net, G_optimizer, D_optimizer, fixed_noise
-            )
+            check_point = get_checkpoint_dict(cfg, model, optimizer, fixed_noise)
             with torch.no_grad():
-                G_net.eval()
+                model.eval()
                 torch.save(
                     check_point, check_point_dir / f"check_point_epoch_{epoch}.pth"
                 )
                 torch.save(
-                    G_net.state_dict(), weight_dir / f"G_weight_epoch_{epoch}.pth"
+                    get_model(cfg, model).state_dict(),
+                    weight_dir / f"model_weight_epoch_{epoch}.pth",
                 )
-                out_imgs = G_net(fixed_noise)
+                out_imgs = get_model(cfg, model).G_net(fixed_noise)
                 out_grid = make_grid(
                     out_imgs,
                     normalize=True,
                     nrow=4,
                     scale_each=True,
-                    padding=int(0.5 * (2**G_net.depth)),
+                    padding=int(0.5 * (2 ** get_model(cfg, model).G_net.depth)),
                 ).permute(1, 2, 0)
                 plt.imshow(out_grid.cpu())
                 plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
@@ -278,7 +315,7 @@ def main(rank, world_size, cfg):
     cleanup()
 
 
-if __name__ == "main":
+if __name__ == "__main__":
     world_size = torch.cuda.device_count()
     cfg = OmegaConf.load("config.yaml")
     cfg.merge_with_cli()
