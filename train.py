@@ -5,8 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
-import torchvision.transforms.v2.functional as tvf
-import torchvision.transforms.v2 as transforms
+import torchvision.transforms as transforms
 from torchvision.utils import make_grid
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
@@ -91,14 +90,12 @@ def get_sched_for_epoch(cfg, epoch):
     return cfg.schedule[idxs[-1]] if len(idxs) > 0 else cfg.schedule[-1]
 
 
-def img_transform():
-    def tf(img: torch.Tensor, size: int):
-        img = tvf.to_dtype(img, dtype=torch.uint8, scale=True)
-        img = tvf.resize(img, [size, size], antialias=True)
-        img = tvf.center_crop(img, [size, size])
-        img = tvf.to_dtype(img, torch.float32, scale=True)
-        return tvf.normalize(img, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-
+def img_transform(size):
+    tf = nn.Sequential(
+        transforms.Resize(size),
+        transforms.CenterCrop(size),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    )
     return torch.jit.script(tf)
 
 
@@ -177,7 +174,7 @@ def main(rank, world_size, cfg):
     lr = 1e-4
     lambd = 10
 
-    prep_images = img_transform()
+    transform = transforms.ToTensor()
     model = Wrapper(
         Generator(latent_size, out_res),
         Discriminator(latent_size, out_res),
@@ -216,7 +213,7 @@ def main(rank, world_size, cfg):
     if cfg.ddp:  # Do this _after_ loading the checkpoint from resume
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
-    dataset = datasets.ImageFolder(data_dir, transform=transforms.ToTensor())
+    dataset = datasets.ImageFolder(data_dir, transform=transform)
     sampler = (
         DistributedSampler(dataset, rank=rank, drop_last=False) if cfg.ddp else None
     )
@@ -246,18 +243,16 @@ def main(rank, world_size, cfg):
                 get_model(cfg, model).growing_net(
                     curr_sched.grow_epochs * len(data_loader)
                 )
-                # TODO: delete
-                model.G_net.growing_net(curr_sched.grow_epochs * len(data_loader))
-                model.D_net.growing_net(curr_sched.grow_epochs * len(data_loader))
                 size = 2 ** (get_model(cfg, model).depth + 1)
             else:
                 assert epoch == 1, "Only the first schedule should have no grow_epochs"
             if rank == 0 and epoch != 1:
                 print(f"Output Resolution: {size}x{size}")
 
+        prep_images = img_transform(size)
         databar = tqdm(data_loader) if rank == 0 else data_loader
         for i, samples in enumerate(databar):
-            samples = prep_images(samples[0].to(device), size)
+            samples = prep_images(samples[0].to(device))
 
             ##  update D
             model.zero_grad()
