@@ -14,7 +14,8 @@ from pathlib import Path
 
 from model import Generator, Discriminator
 
-cfg = OmegaConf.load("config.yaml").merge_with_cli()
+cfg = OmegaConf.load("config.yaml")
+cfg.merge_with_cli()
 
 root = Path(".")
 data_dir = root / cfg.data_dir
@@ -28,11 +29,6 @@ if not os.path.exists(output_dir):
 if not os.path.exists(weight_dir):
     os.makedirs(weight_dir)
 
-# schedule = [[5, 15, 25, 35, 40], [16, 16, 16, 8, 4], [5, 5, 5, 1, 1]]
-sched_start_epochs = [sched.start_epoch for sched in cfg.schedule]
-sched_batch_sizes = [sched.batch_size for sched in cfg.schedule]
-sched_grow_epochs = [sched.grow_epochs for sched in cfg.schedule]
-
 
 def get_sched_for_epoch(epoch):
     """Get's the schedule for a given epoch
@@ -43,7 +39,8 @@ def get_sched_for_epoch(epoch):
     Returns:
             schedule: the schedule to use
     """
-    return [x for x in cfg.schedule if x.start_epoch <= epoch].get(-1, cfg.schedule[-1])
+    idxs = [i for i, x in enumerate(cfg.schedule) if x.start_epoch <= epoch]
+    return cfg.schedule[idxs[-1]] if len(idxs) > 0 else cfg.schedule[-1]
 
 
 curr_sched = get_sched_for_epoch(cfg.resume)
@@ -86,7 +83,7 @@ if torch.cuda.device_count() > 1:
 # Looks like checkpoint is a pickled dict with a bunch of interesting information
 if cfg.resume != 0:
     check_point = torch.load(
-        check_point_dir + "check_point_epoch_%i.pth" % cfg.resume
+        check_point_dir / f"check_point_epoch_{cfg.resume}.pth"
     )  # Expects per epoch saves in a given location
     fixed_noise = check_point["fixed_noise"]
     G_net.load_state_dict(check_point["G_net"])
@@ -110,14 +107,14 @@ data_loader = DataLoader(  # TODO: DDP shuffler
     num_workers=8,
     drop_last=True,
 )
-tot_iter_num = len(dataset) / curr_sched.batch_size  # Num of iters per epoch
-
+log_every = max(1, len(data_loader) // 100)  # log 100 times per epoch
 size = 2 ** (G_net.depth + 1)
-print("Output Resolution: %d x %d" % (size, size))
+print(f"Output Resolution: {size}x{size}")
 
 for epoch in range(1 + cfg.resume, cfg.epochs + 1):
     G_net.train()
     curr_sched = get_sched_for_epoch(epoch)
+    print(f"epoch {epoch}/{num_epochs} schedule: {curr_sched}")
     if epoch == curr_sched.start_epoch:  # if this epoch is the start of a schedule
         # and increasing depth is still less than the output size
         if 2 ** (G_net.depth + 1) < out_res:
@@ -129,13 +126,15 @@ for epoch in range(1 + cfg.resume, cfg.epochs + 1):
                 num_workers=8,
                 drop_last=True,
             )  # Why is dataloader redefined here? -> to change the batch size
-            tot_iter_num = len(dataset) / curr_sched.batch_size
-            G_net.growing_net(curr_sched.growing_epochs * tot_iter_num)
-            D_net.growing_net(curr_sched.growing_epochs * tot_iter_num)
-            size = 2 ** (G_net.depth + 1)
-            print("Output Resolution: %d x %d" % (size, size))
+            log_every = max(1, len(data_loader) // 100)  # log 100 times per epoch
+            if curr_sched.grow_epochs:  # this should be none for the first schedule
+                G_net.growing_net(curr_sched.grow_epochs * len(data_loader))
+                D_net.growing_net(curr_sched.grow_epochs * len(data_loader))
+                size = 2 ** (G_net.depth + 1)
+            else:
+                assert epoch == 1
+            print(f"Output Resolution: {size}x{size}")
 
-    print("epoch: %i/%i" % (int(epoch), int(num_epochs)))
     databar = tqdm(data_loader)
 
     for i, samples in enumerate(databar):
@@ -187,7 +186,8 @@ for epoch in range(1 + cfg.resume, cfg.epochs + 1):
 
         iter_num += 1
 
-        if i % 500 == 0:
+        if i % log_every == 0:
+            print(torch.cuda.memory_summary())
             D_running_loss /= iter_num
             G_running_loss /= iter_num
             databar.set_postfix(
@@ -209,8 +209,8 @@ for epoch in range(1 + cfg.resume, cfg.epochs + 1):
     }
     with torch.no_grad():
         G_net.eval()
-        torch.save(check_point, check_point_dir + "check_point_epoch_%d.pth" % (epoch))
-        torch.save(G_net.state_dict(), weight_dir + "G_weight_epoch_%d.pth" % (epoch))
+        torch.save(check_point, check_point_dir / f"check_point_epoch_{epoch}.pth")
+        torch.save(G_net.state_dict(), weight_dir / f"G_weight_epoch_{epoch}.pth")
         out_imgs = G_net(fixed_noise)
         out_grid = make_grid(
             out_imgs,
@@ -220,4 +220,4 @@ for epoch in range(1 + cfg.resume, cfg.epochs + 1):
             padding=int(0.5 * (2**G_net.depth)),
         ).permute(1, 2, 0)
         plt.imshow(out_grid.cpu())
-        plt.savefig(output_dir + "size_%i_epoch_%d" % (size, epoch))
+        plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
