@@ -2,13 +2,11 @@ epochs: 40
 out_res: 128
 resume: 0 # Which epoch to resume from. 0 means starting at epoch 1 (epochs are 1-indexed)
 latent_size: 512
+num_workers: 5
 lr: 1e-4
 lambd: 10
 cuda: True
-ddp: 
-  enabled: False
-  world_size: 1
-  rank: 0
+ddp: True
 data_dir: "./dataset/"
 checkpoint_dir: "./ckpt/"
 output_dir: "./output"
