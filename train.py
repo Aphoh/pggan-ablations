@@ -187,7 +187,6 @@ for epoch in range(1 + cfg.resume, cfg.epochs + 1):
         iter_num += 1
 
         if i % log_every == 0:
-            print(torch.cuda.memory_summary())
             D_running_loss /= iter_num
             G_running_loss /= iter_num
             databar.set_postfix(
