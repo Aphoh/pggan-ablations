@@ -243,7 +243,7 @@ def main(rank, world_size, cfg):
                 get_model(cfg, model).growing_net(
                     curr_sched.grow_epochs * len(data_loader)
                 )
-                size = 2 ** (get_model(cfg, model).depth + 1)
+                size = 2 ** (get_model(cfg, model).G_net.depth + 1)
             else:
                 assert epoch == 1, "Only the first schedule should have no grow_epochs"
             if rank == 0 and epoch != 1:
