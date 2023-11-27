@@ -92,8 +92,8 @@ def get_sched_for_epoch(cfg, epoch):
 
 def img_transform(size):
     tf = nn.Sequential(
-        transforms.Resize(size),
-        transforms.CenterCrop(size),
+        transforms.Resize([size, size]),
+        transforms.CenterCrop([size, size]),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     )
     return torch.jit.script(tf)
