@@ -13,10 +13,10 @@ output_dir: "./output"
 weight_dir: "./weight/"
 schedule:
   - start_epoch: 1
-    batch_size: 1024
+    batch_size: 512
     grow_epochs: 0
   - start_epoch: 5
-    batch_size: 512
+    batch_size: 256
     grow_epochs: 5
   - start_epoch: 15
     batch_size: 128

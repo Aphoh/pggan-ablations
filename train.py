@@ -5,20 +5,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
-from torchvision import transforms
+import torchvision.transforms.v2.functional as tvf
+import torchvision.transforms.v2 as transforms
 from torchvision.utils import make_grid
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 import torch.optim as optim
 from pathlib import Path
+import torchvision
 
 from model import Generator, Discriminator
 
 import torch.distributed as dist
-from torch.distributed import ReduceOp
 from torch.utils.data.distributed import DistributedSampler
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+torchvision.disable_beta_transforms_warning()
 
 
 def setup(rank, world_size):
@@ -41,7 +44,7 @@ def get_dataloader(cfg, dataset, device, epoch, sched, sampler):
             dataset=dataset,
             batch_size=sched.batch_size,
             sampler=sampler,
-            num_workers=0,
+            num_workers=3,
             pin_memory=True,
             pin_memory_device=device,
             drop_last=True,
@@ -86,6 +89,17 @@ def get_sched_for_epoch(cfg, epoch):
     """
     idxs = [i for i, x in enumerate(cfg.schedule) if x.start_epoch <= epoch]
     return cfg.schedule[idxs[-1]] if len(idxs) > 0 else cfg.schedule[-1]
+
+
+def img_transform():
+    def tf(img: torch.Tensor, size: int):
+        img = tvf.to_dtype(img, dtype=torch.uint8, scale=True)
+        img = tvf.resize(img, [size, size], antialias=True)
+        img = tvf.center_crop(img, [size, size])
+        img = tvf.to_dtype(img, torch.float32, scale=True)
+        return tvf.normalize(img, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+
+    return torch.jit.script(tf)
 
 
 class Wrapper(nn.Module):
@@ -163,14 +177,7 @@ def main(rank, world_size, cfg):
     lr = 1e-4
     lambd = 10
 
-    transform = transforms.Compose(
-        [
-            transforms.Resize(out_res),
-            transforms.CenterCrop(out_res),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ]
-    )
+    prep_images = img_transform()
     model = Wrapper(
         Generator(latent_size, out_res),
         Discriminator(latent_size, out_res),
@@ -209,7 +216,7 @@ def main(rank, world_size, cfg):
     if cfg.ddp:  # Do this _after_ loading the checkpoint from resume
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
-    dataset = datasets.ImageFolder(data_dir, transform=transform)
+    dataset = datasets.ImageFolder(data_dir, transform=transforms.ToTensor())
     sampler = (
         DistributedSampler(dataset, rank=rank, drop_last=False) if cfg.ddp else None
     )
@@ -250,11 +257,7 @@ def main(rank, world_size, cfg):
 
         databar = tqdm(data_loader) if rank == 0 else data_loader
         for i, samples in enumerate(databar):
-            samples = samples[0].to(device)
-            if size != out_res:
-                samples = F.interpolate(samples, size=size)
-            else:
-                samples = samples.to(device)
+            samples = prep_images(samples[0].to(device), size)
 
             ##  update D
             model.zero_grad()
@@ -276,7 +279,6 @@ def main(rank, world_size, cfg):
                 # if cfg.ddp:
                 # dist.reduce(D_running_loss, dst=0, op=ReduceOp.SUM)
                 # dist.reduce(G_running_loss, dst=0, op=ReduceOp.SUM)
-                print(D_running_loss, G_running_loss)
                 d_loss = D_running_loss.item() / (iter_num)  # * world_size)
                 g_loss = G_running_loss.item() / (iter_num)  # * world_size)
                 databar.set_postfix(
@@ -287,7 +289,6 @@ def main(rank, world_size, cfg):
                 )
                 iter_num = 0
                 D_running_loss, G_running_loss = 0.0, 0.0
-                print(f"rank{rank} finished all my stuff")
 
         if rank == 0:
             check_point = get_checkpoint_dict(cfg, model, optimizer, fixed_noise)
