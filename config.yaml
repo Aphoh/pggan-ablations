@@ -6,6 +6,13 @@ num_workers: 5
 lr: 1e-3
 lambd: 10
 cuda: True
+wandb: 
+  enabled: True
+  save_code: True
+  init:
+    project: 'pggan'
+    mode: online
+
 ddp: True
 data_dir: "./dataset/"
 checkpoint_dir: "./ckpt/"

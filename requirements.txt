@@ -1,3 +1,4 @@
 omegaconf
 matplotlib
 numpy
+wandb

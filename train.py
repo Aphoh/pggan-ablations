@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import torch.optim as optim
 from pathlib import Path
 import torchvision
+import wandb
 
 from model import Generator, Discriminator
 
@@ -170,6 +171,12 @@ def main(rank, world_size, cfg):
     if not os.path.exists(weight_dir):
         os.makedirs(weight_dir)
 
+    global_step = 0
+    if cfg.wandb:
+        wandb.init(project="PGGAN", config=cfg)
+        if cfg.wandb.save_code:
+            wandb.run.log_code(exclude_fn=lambda x: "venv" in x)
+
     curr_sched = get_sched_for_epoch(cfg, cfg.resume)
     num_epochs = cfg.epochs
     latent_size = cfg.latent_size
@@ -198,20 +205,20 @@ def main(rank, world_size, cfg):
     # Looks like checkpoint is a pickled dict with a bunch of interesting information
     if cfg.resume != 0:
         map_location = {"cuda:0": f"cuda:{rank}"}  # this is fine non-ddp too
-        check_point = torch.load(
+        ckpt = torch.load(
             check_point_dir / f"check_point_epoch_{cfg.resume}.pth",
             map_location=map_location,
         )  # Expects per epoch saves in a given location
-        fixed_noise = check_point["fixed_noise"]
-        model.G_net.load_state_dict(check_point["G_net"])
-        model.D_net.load_state_dict(check_point["D_net"])
-        optimizer.load_state_dict(check_point["optimizer"])
-        model.G_net.depth = check_point["depth"]
-        model.D_net.depth = check_point["depth"]
-        model.G_net.alpha = check_point["alpha"]
-        model.D_net.alpha = check_point["alpha"]
-        model.G_net.alpha_step = check_point["alpha_step"]
-        model.D_net.alpha_step = check_point["alpha_step"]
+        fixed_noise = ckpt["fixed_noise"]
+        model.G_net.load_state_dict(ckpt["G_net"])
+        model.D_net.load_state_dict(ckpt["D_net"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        model.G_net.depth = ckpt["depth"]
+        model.D_net.depth = ckpt["depth"]
+        model.G_net.alpha = ckpt["alpha"]
+        model.D_net.alpha = ckpt["alpha"]
+        model.G_net.alpha_step = ckpt["alpha_step"]
+        model.D_net.alpha_step = ckpt["alpha_step"]
 
     if cfg.ddp:  # Do this _after_ loading the checkpoint from resume
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
@@ -252,6 +259,17 @@ def main(rank, world_size, cfg):
             if rank == 0 and epoch != 1:
                 print(f"Output Resolution: {size}x{size}")
 
+        if cfg.wandb.enabled:
+            wandb.log(
+                {
+                    "epoch": epoch,
+                    "size": size,
+                    "batch_size": curr_sched.batch_size,
+                    "start_epoch": curr_sched.start_epoch,
+                },
+                step=global_step,
+            )
+
         prep_images = img_transform(size)
         databar = tqdm(data_loader) if rank == 0 else data_loader
         for i, samples in enumerate(databar):
@@ -279,36 +297,44 @@ def main(rank, world_size, cfg):
                 # dist.reduce(G_running_loss, dst=0, op=ReduceOp.SUM)
                 d_loss = D_running_loss.item() / (iter_num)  # * world_size)
                 g_loss = G_running_loss.item() / (iter_num)  # * world_size)
-                databar.set_postfix(
-                    {
-                        "d_loss": f"{d_loss:.3f}",
-                        "g_loss": f"{g_loss:.3f}",
-                    }
-                )
+                d = {
+                    "d_loss": d_loss,
+                    "g_loss": g_loss,
+                }
+                if cfg.wandb.enabled:
+                    wandb.log(d, step=global_step)
+                databar.set_postfix(d)
                 iter_num = 0
                 D_running_loss, G_running_loss = 0.0, 0.0
 
         if rank == 0:
-            check_point = get_checkpoint_dict(cfg, model, optimizer, fixed_noise)
+            ckpt = get_checkpoint_dict(cfg, model, optimizer, fixed_noise)
             with torch.no_grad():
                 model.eval()
-                torch.save(
-                    check_point, check_point_dir / f"check_point_epoch_{epoch}.pth"
-                )
+                ckpt_loc = check_point_dir / f"check_point_epoch_{epoch}.pth"
+                torch.save(ckpt, ckpt_loc)
                 torch.save(
                     get_model(cfg, model).state_dict(),
                     weight_dir / f"model_weight_epoch_{epoch}.pth",
                 )
                 out_imgs = get_model(cfg, model).G_net(fixed_noise)
-                out_grid = make_grid(
-                    out_imgs,
-                    normalize=True,
-                    nrow=4,
-                    scale_each=True,
-                    padding=int(0.5 * (2 ** get_model(cfg, model).G_net.depth)),
-                ).permute(1, 2, 0)
-                plt.imshow(out_grid.cpu())
+                out_grid = (
+                    make_grid(
+                        out_imgs,
+                        normalize=True,
+                        nrow=4,
+                        scale_each=True,
+                        padding=int(0.5 * (2 ** get_model(cfg, model).G_net.depth)),
+                    )
+                    .permute(1, 2, 0)
+                    .cpu()
+                )
+                plt.imshow(out_grid)
                 plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
+                if cfg.wandb.enabled:
+                    wandb.log({"sample_images": wandb.Image(out_grid)}, step=epoch)
+                    wandb.log_artifact(wandb.Artifact(ckpt_loc, type="checkpoint"))
+        global_step += 1
 
     # Done training, clean up
     cleanup()
