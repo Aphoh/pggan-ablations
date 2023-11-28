@@ -172,7 +172,7 @@ def main(rank, world_size, cfg):
         os.makedirs(weight_dir)
 
     global_step = 0
-    if cfg.wandb:
+    if cfg.wandb and rank == 0:
         wandb.init(project="PGGAN", config=cfg)
         if cfg.wandb.save_code:
             wandb.run.log_code(exclude_fn=lambda x: "venv" in x)
@@ -259,7 +259,7 @@ def main(rank, world_size, cfg):
             if rank == 0 and epoch != 1:
                 print(f"Output Resolution: {size}x{size}")
 
-        if cfg.wandb.enabled:
+        if cfg.wandb.enabled and rank == 0:
             wandb.log(
                 {
                     "epoch": epoch,
@@ -301,7 +301,7 @@ def main(rank, world_size, cfg):
                     "d_loss": d_loss,
                     "g_loss": g_loss,
                 }
-                if cfg.wandb.enabled:
+                if cfg.wandb.enabled and rank == 0:
                     wandb.log(d, step=global_step)
                 databar.set_postfix(d)
                 iter_num = 0
@@ -331,7 +331,7 @@ def main(rank, world_size, cfg):
                 )
                 plt.imshow(out_grid)
                 plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
-                if cfg.wandb.enabled:
+                if cfg.wandb.enabled and rank == 0:
                     wandb.log({"sample_images": wandb.Image(out_grid)}, step=epoch)
                     wandb.log_artifact(wandb.Artifact(ckpt_loc, type="checkpoint"))
         global_step += 1
