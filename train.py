@@ -95,6 +95,7 @@ def img_transform(size):
         transforms.Resize([size, size], antialias=True),
         transforms.CenterCrop([size, size]),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.RandomHorizontalFlip(),
     )
     return torch.jit.script(tf)
 
@@ -125,6 +126,8 @@ class Wrapper(nn.Module):
         fake_out = self.D_net(fake)
         real_out = self.D_net(samples)
 
+        epsilon_penalty = 1e-4 * torch.square(real_out).mean()
+
         ## Gradient Penalty
         eps = torch.rand(samples.size(0), 1, 1, 1, device=samples.device)
         eps = eps.expand_as(samples)
@@ -138,7 +141,7 @@ class Wrapper(nn.Module):
         gradient_penalty = self.lambd * ((grad_norm - 1) ** 2).mean()
 
         ## Final Loss
-        return fake_out.mean() - real_out.mean() + gradient_penalty
+        return fake_out.mean() - real_out.mean() + gradient_penalty + epsilon_penalty
 
     def growing_net(self, num_iters):
         self.G_net.growing_net(num_iters)
