@@ -173,7 +173,7 @@ def main(rank, world_size, cfg):
 
     global_step = 0
     if cfg.wandb and rank == 0:
-        wandb.init(project="PGGAN", config=cfg)
+        wandb.init(config=dict(cfg), **cfg.wandb.init)
         if cfg.wandb.save_code:
             wandb.run.log_code(exclude_fn=lambda x: "venv" in x)
 
@@ -191,6 +191,8 @@ def main(rank, world_size, cfg):
         latent_size,
         lambd,
     ).to(device)
+    if cfg.wandb.enabled and rank == 0:
+        wandb.watch(model)
 
     fixed_noise = torch.randn(16, latent_size, 1, 1, device=device)
     optimizer = optim.Adam(  # separate adam for each network
