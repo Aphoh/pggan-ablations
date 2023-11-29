@@ -20,21 +20,21 @@ output_dir: "./output"
 weight_dir: "./weight/"
 schedule:
   - start_epoch: 1 # 4x4
-    batch_size: 256
-    grow_epochs: 0
-  - start_epoch: 15 # 8x8
-    batch_size: 256
-    grow_epochs: 10
-  - start_epoch: 40 # 16x16
-    batch_size: 128
-    grow_epochs: 10
-  - start_epoch: 60 # 32x32
-    batch_size: 32
-    grow_epochs: 10 
-  - start_epoch: 80 # 64x64
     batch_size: 16
-    grow_epochs: 4
-  - start_epoch: 100 # 128x128
-    batch_size: 8
-    grow_epochs: 4
+    grow_epochs: 0
+  - start_epoch: 30 # 8x8
+    batch_size: 16
+    grow_epochs: 30
+  - start_epoch: 90 # 16x16
+    batch_size: 16
+    grow_epochs: 30
+  - start_epoch: 150 # 32x32
+    batch_size: 16
+    grow_epochs: 30
+  - start_epoch: 210 # 64x64
+    batch_size: 16
+    grow_epochs: 30
+  - start_epoch: 270 # 128x128
+    batch_size: 16
+    grow_epochs: 30
 

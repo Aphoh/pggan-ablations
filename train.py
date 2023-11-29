@@ -38,12 +38,12 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def get_dataloader(cfg, dataset, device, epoch, sched, sampler):
+def get_dataloader(cfg, world_size, dataset, device, epoch, sched, sampler):
     if cfg.ddp:
         sampler.set_epoch(epoch)
         return DataLoader(
             dataset=dataset,
-            batch_size=sched.batch_size,
+            batch_size=sched.batch_size // world_size,
             sampler=sampler,
             num_workers=3,
             pin_memory=True,
@@ -242,7 +242,7 @@ def main(rank, world_size, cfg):
         DistributedSampler(dataset, rank=rank, drop_last=False) if cfg.ddp else None
     )
     data_loader = get_dataloader(
-        cfg, dataset, device, 1 + cfg.resume, curr_sched, sampler
+        cfg, world_size, dataset, device, 1 + cfg.resume, curr_sched, sampler
     )
     log_every = max(1, len(data_loader) // 100)  # log 100 times per epoch
     size = 2 ** (get_model(cfg, model).G_net.depth + 1)
@@ -255,7 +255,9 @@ def main(rank, world_size, cfg):
         curr_sched = get_sched_for_epoch(cfg, epoch)
         if rank == 0:
             print(f"epoch {epoch}/{num_epochs} schedule: {curr_sched}")
-        data_loader = get_dataloader(cfg, dataset, device, epoch, curr_sched, sampler)
+        data_loader = get_dataloader(
+            cfg, world_size, dataset, device, epoch, curr_sched, sampler
+        )
         log_every = max(1, len(data_loader) // 100)  # log 100 times per epoch
         if (
             epoch == curr_sched.start_epoch
