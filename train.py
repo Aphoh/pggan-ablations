@@ -198,7 +198,7 @@ def main(rank, world_size, cfg):
     transform = transforms.ToTensor()
     model = Wrapper(
         Generator(latent_size, out_res),
-        Discriminator(latent_size, out_res),
+        Discriminator(latent_size, out_res, use_noise=cfg.D_noise),
         latent_size,
         lambd,
     ).to(device)

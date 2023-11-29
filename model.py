@@ -5,15 +5,12 @@ import torch
 
 
 class FromRGB(nn.Module):
-    def __init__(self, in_ch, out_ch, use_noise=True):
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        self.noise = GaussianNoise() if use_noise else None
         self.conv = EqualizedLR_Conv2d(in_ch, out_ch, kernel_size=(1, 1), stride=(1, 1))
         self.relu = nn.LeakyReLU(0.2)
 
     def forward(self, x):
-        if self.noise:
-            x = self.noise(x)
         x = self.conv(x)
         return self.relu(x)
 
@@ -195,7 +192,7 @@ class Discriminator(nn.Module):
                 # reduce by factor of 2 for each block after 6th
                 in_ch, out_ch = int(512 / 2 ** (d - 5)), int(512 / 2 ** (d - 6))
             self.current_net.append(D_Block(in_ch, out_ch, use_noise=use_noise))
-            self.fromRGBs.append(FromRGB(3, in_ch, use_noise=use_noise))
+            self.fromRGBs.append(FromRGB(3, in_ch))
 
     def forward(self, x_rgb):
         x = self.fromRGBs[self.depth - 1](x_rgb)

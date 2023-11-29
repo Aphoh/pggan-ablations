@@ -14,6 +14,7 @@ wandb:
     mode: online
 n_discrim: 1
 ddp: True
+D_noise: False
 data_dir: "./dataset/"
 checkpoint_dir: "./ckpt/"
 output_dir: "./output"
