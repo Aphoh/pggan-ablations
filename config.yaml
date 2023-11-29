@@ -1,4 +1,4 @@
-epochs: 45
+epochs: 85
 out_res: 128
 resume: 0 # Which epoch to resume from. 0 means starting at epoch 1 (epochs are 1-indexed)
 latent_size: 512
@@ -22,19 +22,19 @@ schedule:
   - start_epoch: 1 # 4x4
     batch_size: 256
     grow_epochs: 0
-  - start_epoch: 5 # 8x8
+  - start_epoch: 10 # 8x8
     batch_size: 256
-    grow_epochs: 5
-  - start_epoch: 15 # 16x16
+    grow_epochs: 10
+  - start_epoch: 30 # 16x16
     batch_size: 128
-    grow_epochs: 5
-  - start_epoch: 25 # 32x32
+    grow_epochs: 10
+  - start_epoch: 50 # 32x32
     batch_size: 32
-    grow_epochs: 5
-  - start_epoch: 35 # 64x64
+    grow_epochs: 10 
+  - start_epoch: 70 # 64x64
     batch_size: 16
-    grow_epochs: 2
-  - start_epoch: 40 # 128x128
+    grow_epochs: 4
+  - start_epoch: 80 # 128x128
     batch_size: 8
-    grow_epochs: 1
+    grow_epochs: 2
 
