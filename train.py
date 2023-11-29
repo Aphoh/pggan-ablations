@@ -358,7 +358,8 @@ def main(rank, world_size, cfg):
         global_step += 1
 
     # Done training, clean up
-    cleanup()
+    if cfg.ddp:
+        cleanup()
 
 
 if __name__ == "__main__":
