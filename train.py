@@ -224,8 +224,7 @@ def main(rank, world_size, cfg):
             map_location=map_location,
         )  # Expects per epoch saves in a given location
         fixed_noise = ckpt["fixed_noise"]
-        model.G_net.load_state_dict(ckpt["G_net"])
-        model.D_net.load_state_dict(ckpt["D_net"])
+        model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         model.G_net.depth = ckpt["depth"]
         model.D_net.depth = ckpt["depth"]
