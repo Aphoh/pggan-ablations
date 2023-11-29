@@ -99,16 +99,11 @@ def img_transform():
             imgb = F.interpolate(
                 img,
                 size=(size // 2, size // 2),
-                mode="bilinear",
-                align_corners=True,
             )  # scale down to half size
-            imgb = F.interpolate(
-                imgb, size=(size, size), mode="bilinear", align_corners=True
-            )  # scale up to full size
-            imgb = tvF.center_crop(imgb, [size, size])
+            imgb = F.interpolate(imgb, size=(size, size))  # scale up to full size
+            print(imgb.shape, (size, size))
 
-        img = tvF.center_crop(img, [size, size])
-        img = F.interpolate(img, size=(size, size), mode="bilinear", align_corners=True)
+        img = F.interpolate(img, size=(size, size))
         img = img * alpha + (1 - alpha) * imgb if alpha < 1 else img
         img = tvF.normalize(img, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         img = tvF.hflip(img) if torch.rand(1) > 0.5 else img
