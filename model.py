@@ -1,15 +1,20 @@
 import torch.nn as nn
 import numpy as np
 from utils import EqualizedLR_Conv2d, Pixel_norm, Minibatch_std
+import torch
 
 
 class FromRGB(nn.Module):
-    def __init__(self, in_ch, out_ch):
+    def __init__(self, in_ch, out_ch, use_noise=True):
+        if self.use_noise:
+            self.noise = GaussianNoise()
         super().__init__()
         self.conv = EqualizedLR_Conv2d(in_ch, out_ch, kernel_size=(1, 1), stride=(1, 1))
         self.relu = nn.LeakyReLU(0.2)
 
     def forward(self, x):
+        if self.use_noise:
+            x = self.noise(x)
         x = self.conv(x)
         return self.relu(x)
 
@@ -21,6 +26,22 @@ class ToRGB(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
+
+
+class GaussianNoise(nn.Module):  # Try noise just for real or just for fake images.
+    def __init__(self, std=0.1, decay_rate=0):
+        super().__init__()
+        self.std = std
+        self.decay_rate = decay_rate
+
+    def decay_step(self):
+        self.std = max(self.std - self.decay_rate, 0)
+
+    def forward(self, x):
+        if self.training:
+            return x + torch.empty_like(x).normal_(std=self.std)
+        else:
+            return x
 
 
 class G_Block(nn.Module):
@@ -61,9 +82,11 @@ class G_Block(nn.Module):
 
 
 class D_Block(nn.Module):
-    def __init__(self, in_ch, out_ch, initial_block=False):
+    def __init__(self, in_ch, out_ch, initial_block=False, use_noise=True):
         super().__init__()
 
+        if self.use_noise:
+            self.noise = GaussianNoise()
         if initial_block:
             self.minibatchstd = Minibatch_std()
             self.conv1 = EqualizedLR_Conv2d(
@@ -90,6 +113,8 @@ class D_Block(nn.Module):
         nn.init.zeros_(self.conv2.bias)
 
     def forward(self, x):
+        if self.use_noise:
+            x = self.noise(x)
         if self.minibatchstd is not None:
             x = self.minibatchstd(x)
 
@@ -153,7 +178,7 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, latent_size, out_res):
+    def __init__(self, latent_size, out_res, use_noise=True):
         super().__init__()
         self.depth = 1
         self.alpha = 1
@@ -162,7 +187,7 @@ class Discriminator(nn.Module):
         self.downsample = nn.AvgPool2d(kernel_size=(2, 2), stride=(2, 2))
 
         self.current_net = nn.ModuleList(
-            [D_Block(latent_size, latent_size, initial_block=True)]
+            [D_Block(latent_size, latent_size, initial_block=True, use_noise=use_noise)]
         )
         self.fromRGBs = nn.ModuleList([FromRGB(3, latent_size)])
         for d in range(2, int(np.log2(out_res))):
@@ -171,8 +196,8 @@ class Discriminator(nn.Module):
             else:
                 # reduce by factor of 2 for each block after 6th
                 in_ch, out_ch = int(512 / 2 ** (d - 5)), int(512 / 2 ** (d - 6))
-            self.current_net.append(D_Block(in_ch, out_ch))
-            self.fromRGBs.append(FromRGB(3, in_ch))
+            self.current_net.append(D_Block(in_ch, out_ch, use_noise=use_noise))
+            self.fromRGBs.append(FromRGB(3, in_ch, use_noise=use_noise))
 
     def forward(self, x_rgb):
         x = self.fromRGBs[self.depth - 1](x_rgb)
