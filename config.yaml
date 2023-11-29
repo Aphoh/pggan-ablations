@@ -32,9 +32,9 @@ schedule:
     batch_size: 32
     grow_epochs: 5
   - start_epoch: 35 # 64x64
-    batch_size: 32
+    batch_size: 16
     grow_epochs: 2
   - start_epoch: 40 # 128x128
-    batch_size: 32
+    batch_size: 8
     grow_epochs: 1
 

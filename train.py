@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as tvF
 from torchvision.utils import make_grid
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
@@ -91,14 +92,30 @@ def get_sched_for_epoch(cfg, epoch):
     return cfg.schedule[idxs[-1]] if len(idxs) > 0 else cfg.schedule[-1]
 
 
-def img_transform(size):
-    tf = nn.Sequential(
-        transforms.Resize([size, size], antialias=True),
-        transforms.CenterCrop([size, size]),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        transforms.RandomHorizontalFlip(),
-    )
-    return torch.jit.script(tf)
+def img_transform():
+    def tf(img, size, alpha):
+        imgb = None
+        if alpha < 1:
+            imgb = F.interpolate(
+                img,
+                size=(size // 2, size // 2),
+                mode="bilinear",
+                align_corners=True,
+            )  # scale down to half size
+            imgb = F.interpolate(
+                imgb, size=(size, size), mode="bilinear", align_corners=True
+            )  # scale up to full size
+            imgb = tvF.center_crop(imgb, [size, size])
+
+        img = tvF.center_crop(img, [size, size])
+        img = F.interpolate(img, size=(size, size), mode="bilinear", align_corners=True)
+        img = img * alpha + (1 - alpha) * imgb if alpha < 1 else img
+        img = tvF.normalize(img, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        img = tvF.hflip(img) if torch.rand(1) > 0.5 else img
+
+        return img
+
+    return tf
 
 
 class Wrapper(nn.Module):
@@ -238,6 +255,7 @@ def main(rank, world_size, cfg):
     if rank == 0:
         print(f"Output Resolution: {size}x{size}")
 
+    prep_images = img_transform()
     for epoch in range(1 + cfg.resume, cfg.epochs + 1):
         model.train()
         curr_sched = get_sched_for_epoch(cfg, epoch)
@@ -273,10 +291,11 @@ def main(rank, world_size, cfg):
                 step=global_step,
             )
 
-        prep_images = img_transform(size)
         databar = tqdm(data_loader) if rank == 0 else data_loader
         for i, samples in enumerate(databar):
-            samples = prep_images(samples[0].to(device))
+            samples = prep_images(
+                samples[0].to(device), size, get_model(cfg, model).G_net.alpha
+            )
 
             ##  update D
             model.zero_grad()
