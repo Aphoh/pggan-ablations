@@ -347,11 +347,11 @@ def main(rank, world_size, cfg):
                 plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
                 if cfg.wandb.enabled and rank == 0:
                     wandb.log({"sample_images": wandb.Image(out_grid)}, step=epoch)
-                    artifact = wandb.Artifact(
-                        name=f"size_{size}_epoch_{epoch}", type="checkpoint"
-                    )
-                    artifact.add_file(str(ckpt_loc.resolve()))
-                    wandb.log_artifact(artifact)
+                    # artifact = wandb.Artifact(
+                    #    name=f"size_{size}_epoch_{epoch}", type="checkpoint"
+                    # )
+                    # artifact.add_file(str(ckpt_loc.resolve()))
+                    # wandb.log_artifact(artifact)
         global_step += 1
 
     # Done training, clean up

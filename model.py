@@ -6,14 +6,13 @@ import torch
 
 class FromRGB(nn.Module):
     def __init__(self, in_ch, out_ch, use_noise=True):
-        if self.use_noise:
-            self.noise = GaussianNoise()
         super().__init__()
+        self.noise = GaussianNoise() if use_noise else None
         self.conv = EqualizedLR_Conv2d(in_ch, out_ch, kernel_size=(1, 1), stride=(1, 1))
         self.relu = nn.LeakyReLU(0.2)
 
     def forward(self, x):
-        if self.use_noise:
+        if self.noise:
             x = self.noise(x)
         x = self.conv(x)
         return self.relu(x)
@@ -85,8 +84,7 @@ class D_Block(nn.Module):
     def __init__(self, in_ch, out_ch, initial_block=False, use_noise=True):
         super().__init__()
 
-        if self.use_noise:
-            self.noise = GaussianNoise()
+        self.noise = GaussianNoise() if use_noise else None
         if initial_block:
             self.minibatchstd = Minibatch_std()
             self.conv1 = EqualizedLR_Conv2d(
@@ -113,7 +111,7 @@ class D_Block(nn.Module):
         nn.init.zeros_(self.conv2.bias)
 
     def forward(self, x):
-        if self.use_noise:
+        if self.noise:
             x = self.noise(x)
         if self.minibatchstd is not None:
             x = self.minibatchstd(x)
