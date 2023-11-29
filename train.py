@@ -63,8 +63,8 @@ def get_checkpoint_dict(cfg, model, optimizer, fixed_noise):
     if cfg.ddp:
         model = model.module
     return {
-        "model": model,
-        "optimizer": optimizer,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
         "fixed_noise": fixed_noise,
         "depth": model.G_net.depth,
         "alpha": model.G_net.alpha,
@@ -201,8 +201,9 @@ def main(rank, world_size, cfg):
         betas=(0, 0.99),
     )
 
-    D_running_loss, G_running_loss = 0, 0
-    iter_num = 0
+    D_running_loss, D_iter = torch.tensor(0.0).to(device), 0
+    G_running_loss, G_iter = torch.tensor(0.0).to(device), 0
+    curr_stats = {}
 
     # Looks like checkpoint is a pickled dict with a bunch of interesting information
     if cfg.resume != 0:
@@ -279,35 +280,37 @@ def main(rank, world_size, cfg):
 
             ##  update D
             model.zero_grad()
-            D_loss = get_model(cfg, model).train_D(samples)
-            D_loss.backward()
-            get_model(cfg, model).G_net.zero_grad()  # just in case, no grads for G
-            optimizer.step()
-            ## update G
-            model.zero_grad()
-            G_loss = get_model(cfg, model).train_G(samples)
-            G_loss.backward()
+            if i % (cfg.n_discrim + 1) == 0:  # run D n_discrim times for every G run
+                G_loss = get_model(cfg, model).train_G(samples)
+                G_loss.backward()
+                G_running_loss += G_loss.detach()
+                G_iter += 1
+            else:
+                D_loss = get_model(cfg, model).train_D(samples)
+                D_loss.backward()
+                get_model(cfg, model).G_net.zero_grad()  # just in case, no grads for G
+                D_running_loss += D_loss.detach()
+                D_iter += 1
+
             optimizer.step()
 
-            D_running_loss += D_loss.detach()
-            G_running_loss += G_loss.detach()
-
-            iter_num += 1
             if i % log_every == 0 and rank == 0:
                 # if cfg.ddp:
                 # dist.reduce(D_running_loss, dst=0, op=ReduceOp.SUM)
                 # dist.reduce(G_running_loss, dst=0, op=ReduceOp.SUM)
-                d_loss = D_running_loss.item() / (iter_num)  # * world_size)
-                g_loss = G_running_loss.item() / (iter_num)  # * world_size)
-                d = {
-                    "d_loss": d_loss,
-                    "g_loss": g_loss,
-                }
+                d = {}
+                if D_iter > 0:
+                    d["d_loss"] = D_running_loss.item() / (D_iter)  # * world_size)
+                    D_iter = 0
+                if G_iter > 0:
+                    d["g_loss"] = G_running_loss.item() / (G_iter)  # * world_size)
+                    G_iter = 0
                 if cfg.wandb.enabled and rank == 0:
                     wandb.log(d, step=global_step)
-                databar.set_postfix(d)
-                iter_num = 0
-                D_running_loss, G_running_loss = 0.0, 0.0
+                curr_stats.update(d)
+                databar.set_postfix(curr_stats)  # Is this necessary?
+                D_running_loss = torch.tensor(0.0).to(device)
+                G_running_loss = torch.tensor(0.0).to(device)
 
         if rank == 0:
             ckpt = get_checkpoint_dict(cfg, model, optimizer, fixed_noise)
@@ -320,22 +323,22 @@ def main(rank, world_size, cfg):
                     weight_dir / f"model_weight_epoch_{epoch}.pth",
                 )
                 out_imgs = get_model(cfg, model).G_net(fixed_noise)
-                out_grid = (
-                    make_grid(
-                        out_imgs,
-                        normalize=True,
-                        nrow=4,
-                        scale_each=True,
-                        padding=int(0.5 * (2 ** get_model(cfg, model).G_net.depth)),
-                    )
-                    .permute(1, 2, 0)
-                    .cpu()
-                )
-                plt.imshow(out_grid)
+                out_grid = make_grid(
+                    out_imgs,
+                    normalize=True,
+                    nrow=4,
+                    scale_each=True,
+                    padding=int(0.5 * (2 ** get_model(cfg, model).G_net.depth)),
+                ).cpu()
+                plt.imshow(out_grid.permute(1, 2, 0))
                 plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
                 if cfg.wandb.enabled and rank == 0:
                     wandb.log({"sample_images": wandb.Image(out_grid)}, step=epoch)
-                    wandb.log_artifact(wandb.Artifact(ckpt_loc, type="checkpoint"))
+                    artifact = wandb.Artifact(
+                        name=f"size_{size}_epoch_{epoch}", type="checkpoint"
+                    )
+                    artifact.add_file(str(ckpt_loc.resolve()))
+                    wandb.log_artifact(artifact)
         global_step += 1
 
     # Done training, clean up

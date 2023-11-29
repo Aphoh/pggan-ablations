@@ -12,7 +12,7 @@ wandb:
   init:
     project: 'pggan'
     mode: online
-
+n_discrim: 1
 ddp: True
 data_dir: "./dataset/"
 checkpoint_dir: "./ckpt/"
