@@ -101,7 +101,6 @@ def img_transform():
                 size=(size // 2, size // 2),
             )  # scale down to half size
             imgb = F.interpolate(imgb, size=(size, size))  # scale up to full size
-            print(imgb.shape, (size, size))
 
         img = F.interpolate(img, size=(size, size))
         img = img * alpha + (1 - alpha) * imgb if alpha < 1 else img
