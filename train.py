@@ -12,6 +12,7 @@ from torchvision.utils import make_grid, save_image
 
 import matplotlib.pyplot as plt
 import torch.optim as optim
+import wandb
 
 from model import Generator, Discriminator
 
@@ -20,20 +21,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--root", type=str, default="./", help="directory contrains the data and outputs"
 )
-parser.add_argument("--epochs", type=int, default=40, help="training epoch number")
+parser.add_argument("--epochs", type=int, default=47, help="training epoch number")
 parser.add_argument(
-    "--out_res", type=int, default=128, help="The resolution of final output image"
+    "--out_res", type=int, default=256, help="The resolution of final output image"
 )
 parser.add_argument("--resume", type=int, default=0, help="continues from epoch number")
 parser.add_argument("--cuda", action="store_true", help="Using GPU to train")
+parser.add_argument("--output_dir", type=str, help="Output directory")
+parser.add_argument("--ckpt_dir", type=str, help="Checkpoint directory")
 
 
 opt = parser.parse_args()
 
 root = opt.root
 data_dir = root + "dataset/"
-check_point_dir = root + "check_points/"
-output_dir = root + "output/"
+check_point_dir = opt.ckpt_dir
+output_dir = opt.output_dir
 weight_dir = root + "weight/"
 if not os.path.exists(check_point_dir):
     os.makedirs(check_point_dir)
@@ -43,7 +46,7 @@ if not os.path.exists(weight_dir):
     os.makedirs(weight_dir)
 
 ## The schedule contains [num of epoches for starting each size][batch size for each size][num of epoches]
-schedule = [[5, 15, 25, 35, 40], [16, 16, 16, 8, 4], [5, 5, 5, 1, 1]]
+schedule = [[5, 15, 25, 35, 40, 45], [16, 16, 16, 8, 4, 4], [5, 5, 5, 1, 1, 1]]
 batch_size = schedule[1][0]
 growing = schedule[2][0]
 epochs = opt.epochs
@@ -152,6 +155,8 @@ except:
 size = 2 ** (G_net.depth + 1)
 print("Output Resolution: %d x %d" % (size, size))
 
+wandb.init()
+
 for epoch in range(1 + opt.resume, opt.epochs + 1):
     G_net.train()
     D_epoch_loss = 0.0
@@ -229,6 +234,15 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
         if i % 500 == 0:
             D_running_loss /= iter_num
             G_running_loss /= iter_num
+            wandb.log(
+                {
+                    "D_loss": D_running_loss,
+                    "G_loss": G_running_loss,
+                    "gp": gradient_penalty,
+                    "epoch": epoch,
+                    "size": size,
+                }
+            )
             print("iteration : %d, gp: %.2f" % (i, gradient_penalty))
             databar.set_description(
                 "D_loss: %.3f   G_loss: %.3f" % (D_running_loss, G_running_loss)
@@ -264,3 +278,8 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
             padding=int(0.5 * (2**G_net.depth)),
         ).permute(1, 2, 0)
         plt.imshow(out_grid.cpu + "size_%i_epoch_%d" % (size, epoch))
+
+last_checkpoint = check_point_dir + "check_point_epoch_%d.pth" % epoch
+artifact = wandb.Artifact(type="checkpoint", name="final checkpoint")
+artifact.add_file(last_checkpoint)
+wandb.log_artifact(artifact)
