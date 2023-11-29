@@ -192,7 +192,6 @@ def main(rank, world_size, cfg):
     num_epochs = cfg.epochs
     latent_size = cfg.latent_size
     out_res = cfg.out_res
-    lr = 1e-4
     lambd = 10
 
     transform = transforms.ToTensor()
@@ -208,7 +207,7 @@ def main(rank, world_size, cfg):
     fixed_noise = torch.randn(16, latent_size, 1, 1, device=device)
     optimizer = optim.Adam(  # separate adam for each network
         [{"params": model.G_net.parameters()}, {"params": model.D_net.parameters()}],
-        lr=lr,
+        lr=curr_sched.lr,
         betas=(0, 0.99),
     )
 
@@ -252,6 +251,9 @@ def main(rank, world_size, cfg):
     for epoch in range(1 + cfg.resume, cfg.epochs + 1):
         model.train()
         curr_sched = get_sched_for_epoch(cfg, epoch)
+        wandb.log({"lr": curr_sched.lr}, step=global_step)
+        for group in optimizer.param_groups:
+            group["lr"] = curr_sched.lr
         if rank == 0:
             print(f"epoch {epoch}/{num_epochs} schedule: {curr_sched}")
         data_loader = get_dataloader(

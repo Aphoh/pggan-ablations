@@ -1,9 +1,8 @@
-epochs: 120
-out_res: 128
+epochs: 360
+out_res: 256
 resume: 0 # Which epoch to resume from. 0 means starting at epoch 1 (epochs are 1-indexed)
 latent_size: 512
 num_workers: 5
-lr: 1e-3
 lambd: 10
 cuda: True
 wandb: 
@@ -21,21 +20,31 @@ output_dir: "./output"
 weight_dir: "./weight/"
 schedule:
   - start_epoch: 1 # 4x4
-    batch_size: 16
+    batch_size: 256
     grow_epochs: 0
+    lr: 4e-4
   - start_epoch: 30 # 8x8
-    batch_size: 16
+    batch_size: 256
     grow_epochs: 30
+    lr: 4e-4
   - start_epoch: 90 # 16x16
-    batch_size: 16
+    batch_size: 128
     grow_epochs: 30
+    lr: 2.83e-4
   - start_epoch: 150 # 32x32
-    batch_size: 16
+    batch_size: 64
     grow_epochs: 30
+    lr: 2e-4
   - start_epoch: 210 # 64x64
     batch_size: 16
     grow_epochs: 30
+    lr: 1e-4
   - start_epoch: 270 # 128x128
     batch_size: 16
     grow_epochs: 30
+    lr: 1e-4
+  - start_epoch: 330 # 256x256
+    batch_size: 8
+    grow_epochs: 30
+    lr: 7e-5
 
