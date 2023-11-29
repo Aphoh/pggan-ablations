@@ -251,7 +251,8 @@ def main(rank, world_size, cfg):
     for epoch in range(1 + cfg.resume, cfg.epochs + 1):
         model.train()
         curr_sched = get_sched_for_epoch(cfg, epoch)
-        wandb.log({"lr": curr_sched.lr}, step=global_step)
+        if cfg.wandb.enabled and rank == 0:
+            wandb.log({"lr": curr_sched.lr}, step=global_step)
         for group in optimizer.param_groups:
             group["lr"] = curr_sched.lr
         if rank == 0:
