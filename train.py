@@ -112,6 +112,37 @@ def img_transform():
     return tf
 
 
+def save_checkpoint(
+    cfg, rank, check_point_dir, epoch, size, model, optimizer, fixed_noise
+):
+    ckpt = get_checkpoint_dict(cfg, model, optimizer, fixed_noise)
+    ckpt_loc = check_point_dir / f"check_point_epoch_{epoch}.pth"
+    torch.save(ckpt, ckpt_loc)
+    if cfg.wandb.enabled and rank == 0:
+        artifact = wandb.Artifact(name=f"size_{size}_epoch_{epoch}", type="checkpoint")
+        artifact.add_file(str(ckpt_loc.resolve()))
+        wandb.log_artifact(artifact)
+
+
+def save_test_image(cfg, rank, output_dir, epoch, size, model, fixed_noise):
+    model.eval()
+    with torch.no_grad():
+        out_imgs = get_model(cfg, model).G_net(fixed_noise)
+        out_grid = make_grid(
+            out_imgs,
+            normalize=True,
+            nrow=4,
+            scale_each=True,
+            padding=int(0.5 * (2 ** get_model(cfg, model).G_net.depth)),
+        ).cpu()
+        plt.imshow(out_grid.permute(1, 2, 0))
+        plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
+        if cfg.wandb.enabled and rank == 0:
+            wandb.log({"sample_images": wandb.Image(out_grid)}, step=epoch)
+
+    model.train()
+
+
 class Wrapper(nn.Module):
     def __init__(self, G_net, D_net, latent_size, lambd):
         super().__init__()
@@ -330,35 +361,26 @@ def main(rank, world_size, cfg):
                 G_running_loss = torch.tensor(0.0).to(device)
 
         if rank == 0:
-            ckpt = get_checkpoint_dict(cfg, model, optimizer, fixed_noise)
-            with torch.no_grad():
-                model.eval()
-                ckpt_loc = check_point_dir / f"check_point_epoch_{epoch}.pth"
-                torch.save(ckpt, ckpt_loc)
-                torch.save(
-                    get_model(cfg, model).state_dict(),
-                    weight_dir / f"model_weight_epoch_{epoch}.pth",
+            if get_sched_for_epoch(cfg, epoch + 1).start_epoch == epoch + 1:
+                # This is the end of training for this schedule, so let's save a checkpoint!
+                save_checkpoint(
+                    cfg,
+                    rank,
+                    check_point_dir,
+                    epoch,
+                    size,
+                    model,
+                    optimizer,
+                    fixed_noise,
                 )
-                out_imgs = get_model(cfg, model).G_net(fixed_noise)
-                out_grid = make_grid(
-                    out_imgs,
-                    normalize=True,
-                    nrow=4,
-                    scale_each=True,
-                    padding=int(0.5 * (2 ** get_model(cfg, model).G_net.depth)),
-                ).cpu()
-                plt.imshow(out_grid.permute(1, 2, 0))
-                plt.savefig(output_dir / f"size_{size}_epoch_{epoch}")
-                if cfg.wandb.enabled and rank == 0:
-                    wandb.log({"sample_images": wandb.Image(out_grid)}, step=epoch)
-                    # artifact = wandb.Artifact(
-                    #    name=f"size_{size}_epoch_{epoch}", type="checkpoint"
-                    # )
-                    # artifact.add_file(str(ckpt_loc.resolve()))
-                    # wandb.log_artifact(artifact)
+            save_test_image(cfg, rank, output_dir, epoch, size, model, fixed_noise)
+            model.train()  # just in case
         global_step += 1
 
-    # Done training, clean up
+    # Done training, clean up and save a final checkpoint
+    save_checkpoint(
+        cfg, rank, check_point_dir, epoch, size, model, optimizer, fixed_noise
+    )
     if cfg.ddp:
         cleanup()
 
