@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from torchvision.utils import make_grid, save_image
+from torchvision.utils import make_grid
 
 import matplotlib.pyplot as plt
 import torch.optim as optim
@@ -29,6 +29,9 @@ parser.add_argument("--resume", type=int, default=0, help="continues from epoch 
 parser.add_argument("--cuda", action="store_true", help="Using GPU to train")
 parser.add_argument("--output_dir", type=str, help="Output directory")
 parser.add_argument("--ckpt_dir", type=str, help="Checkpoint directory")
+parser.add_argument(
+    "--nearest", action="store_true", help="Using nearest interpolation"
+)
 
 
 opt = parser.parse_args()
@@ -59,7 +62,11 @@ device = torch.device("cuda:0" if (torch.cuda.is_available() and opt.cuda) else 
 
 transform = transforms.Compose(
     [
-        transforms.Resize(out_res),
+        transforms.Resize(  # no-op if out_res is 256
+            out_res,
+            interpolation="nearest" if opt.nearest else "bilinear",
+            antialias=True,
+        ),
         transforms.CenterCrop(out_res),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
@@ -185,7 +192,12 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
     for i, samples in enumerate(databar):
         ##  update D
         if size != out_res:
-            samples = F.interpolate(samples[0], size=size).to(device)
+            samples = F.interpolate(
+                samples[0],
+                mode="nearest" if opt.nearest else "bilinear",
+                size=size,
+                antialias=not opt.nearest,
+            ).to(device)
         else:
             samples = samples[0].to(device)
         D_net.zero_grad()
@@ -243,9 +255,9 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
                     "size": size,
                 }
             )
-            print("iteration : %d, gp: %.2f" % (i, gradient_penalty))
             databar.set_description(
-                "D_loss: %.3f   G_loss: %.3f" % (D_running_loss, G_running_loss)
+                "D_loss: %.3f   G_loss: %.3f, gp: %.2f"
+                % (D_running_loss, G_running_loss, gradient_penalty)
             )
             iter_num = 0
             D_running_loss = 0.0
@@ -254,21 +266,27 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
     D_epoch_losses.append(D_epoch_loss / tot_iter_num)
     G_epoch_losses.append(G_epoch_loss / tot_iter_num)
 
-    check_point = {
-        "G_net": G_net.state_dict(),
-        "G_optimizer": G_optimizer.state_dict(),
-        "D_net": D_net.state_dict(),
-        "D_optimizer": D_optimizer.state_dict(),
-        "D_epoch_losses": D_epoch_losses,
-        "G_epoch_losses": G_epoch_losses,
-        "fixed_noise": fixed_noise,
-        "depth": G_net.depth,
-        "alpha": G_net.alpha,
-    }
     with torch.no_grad():
         G_net.eval()
-        torch.save(check_point, check_point_dir + "check_point_epoch_%d.pth" % (epoch))
-        torch.save(G_net.state_dict(), weight_dir + "G_weight_epoch_%d.pth" % (epoch))
+        # save checkpoint after each size change
+        if epoch + 1 in schedule[0] or epoch == opt.epochs:
+            check_point = {
+                "G_net": G_net.state_dict(),
+                "G_optimizer": G_optimizer.state_dict(),
+                "D_net": D_net.state_dict(),
+                "D_optimizer": D_optimizer.state_dict(),
+                "D_epoch_losses": D_epoch_losses,
+                "G_epoch_losses": G_epoch_losses,
+                "fixed_noise": fixed_noise,
+                "depth": G_net.depth,
+                "alpha": G_net.alpha,
+            }
+            checkpoint_loc = check_point_dir + "check_point_epoch_%d.pth" % (epoch)
+            torch.save(check_point, checkpoint_loc)
+            artifact = wandb.Artifact(type="checkpoint", name="final checkpoint")
+            artifact.add_file(checkpoint_loc)
+            wandb.log_artifact(artifact)
+
         out_imgs = G_net(fixed_noise)
         out_grid = make_grid(
             out_imgs,
@@ -277,9 +295,7 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
             scale_each=True,
             padding=int(0.5 * (2**G_net.depth)),
         ).permute(1, 2, 0)
-        plt.imshow(out_grid.cpu + "size_%i_epoch_%d" % (size, epoch))
-
-last_checkpoint = check_point_dir + "check_point_epoch_%d.pth" % epoch
-artifact = wandb.Artifact(type="checkpoint", name="final checkpoint")
-artifact.add_file(last_checkpoint)
-wandb.log_artifact(artifact)
+        plt.imshow(out_grid.cpu())
+        plt.savefig(output_dir + "size_%i_epoch_%d" % (size, epoch))
+        img = wandb.Image(out_grid.cpu().numpy())
+        wandb.log({"generated_images": img, "epoch": epoch})
