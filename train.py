@@ -9,6 +9,7 @@ import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.utils import make_grid
+from torchvision.transforms import InterpolationMode
 
 import matplotlib.pyplot as plt
 import torch.optim as optim
@@ -64,7 +65,9 @@ transform = transforms.Compose(
     [
         transforms.Resize(  # no-op if out_res is 256
             out_res,
-            interpolation="nearest" if opt.nearest else "bilinear",
+            interpolation=InterpolationMode.NEAREST
+            if opt.nearest
+            else InterpolationMode.BILINEAR,
             antialias=True,
         ),
         transforms.CenterCrop(out_res),
