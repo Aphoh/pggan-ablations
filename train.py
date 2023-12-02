@@ -286,7 +286,11 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
             }
             checkpoint_loc = check_point_dir + "check_point_epoch_%d.pth" % (epoch)
             torch.save(check_point, checkpoint_loc)
-            artifact = wandb.Artifact(type="checkpoint", name="final checkpoint")
+            artifact = wandb.Artifact(
+                type="checkpoint",
+                name="checkpoint_size_%d_epoch_%d" % (size, epoch),
+                description="checkpoint for size %d epoch %d" % (size, epoch),
+            )
             artifact.add_file(checkpoint_loc)
             wandb.log_artifact(artifact)
 
