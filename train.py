@@ -45,7 +45,7 @@ def smooth_highpass_filt(img_ifft, pct):
 def _fft_filt(img: torch.Tensor, pct: torch.Tensor):
     img_ifft = fft.ifftshift(fft.ifft2(img))
     img_ifft = smooth_highpass_filt(img_ifft, pct)
-    return fft.fft2(fft.fftshift(img_ifft)).real
+    return fft.fft2(fft.fftshift(img_ifft)).real.clip(0, 1)
 
 
 fft_filt = torch.jit.script(_fft_filt)
