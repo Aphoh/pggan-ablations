@@ -239,6 +239,7 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
             samples = fft_filt(
                 samples, torch.tensor(epoch / epochs, device=samples.device)
             )
+        samples = post_transform(samples)  # normalization
         if size != out_res:
             samples = F.interpolate(
                 samples,
@@ -246,7 +247,6 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
                 size=size,
                 antialias=not opt.nearest,
             )
-        samples = post_transform(samples)  # normalization
 
         D_net.zero_grad()
         noise = torch.randn(samples.size(0), latent_size, 1, 1, device=device)
@@ -271,8 +271,11 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
 
         D_loss = fake_out.mean() - real_out.mean() + gradient_penalty
 
-        D_loss.backward()
-        D_optimizer.step()
+        if not torch.isnan(D_loss):
+            D_loss.backward()
+            D_optimizer.step()
+        else:
+            D_loss = 0
 
         ##	update G
 
@@ -281,8 +284,11 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
 
         G_loss = -fake_out.mean()
 
-        G_loss.backward()
-        G_optimizer.step()
+        if not torch.isnan(G_loss):
+            G_loss.backward()
+            G_optimizer.step()
+        else:
+            G_loss = 0
 
         ##############
 
