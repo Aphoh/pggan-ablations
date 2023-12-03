@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.utils import make_grid
 from torchvision.transforms import InterpolationMode
+from torch import fft
 
 import matplotlib.pyplot as plt
 import torch.optim as optim
@@ -18,13 +19,45 @@ import wandb
 from model import Generator, Discriminator
 
 
+def smooth_highpass_filt(img_ifft, pct):
+    w, h = img_ifft.shape[-2:]
+    xx, yy = torch.meshgrid(
+        torch.arange(-w // 2, w // 2, device=img_ifft.device),
+        torch.arange(-h // 2, h // 2, device=img_ifft.device),
+        indexing="xy",
+    )
+    s2 = 2**0.5
+    # rotate 45 to get square filter for FFT
+    xx2 = xx * s2 - yy * s2
+    yy2 = xx * s2 + yy * s2
+    xx, yy = xx2, yy2
+    rr = torch.norm(
+        torch.stack((xx.to(torch.float32), yy.to(torch.float32)), dim=-1), dim=-1, p=1
+    )
+    rr /= rr.max()
+    b = pct**3
+    mask = torch.min(
+        torch.ones_like(rr), (rr < b).int() + torch.exp(-((rr - b) ** 2) / 1e-4)
+    )
+    return mask * img_ifft
+
+
+def _fft_filt(img: torch.Tensor, pct: torch.Tensor):
+    img_ifft = fft.ifftshift(fft.ifft2(img))
+    img_ifft = smooth_highpass_filt(img_ifft, pct)
+    return fft.fft2(fft.fftshift(img_ifft)).real
+
+
+fft_filt = torch.jit.script(_fft_filt)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--root", type=str, default="./", help="directory contrains the data and outputs"
 )
 parser.add_argument("--epochs", type=int, default=47, help="training epoch number")
 parser.add_argument(
-    "--out_res", type=int, default=256, help="The resolution of final output image"
+    "--out_res", type=int, default=128, help="The resolution of final output image"
 )
 parser.add_argument("--resume", type=int, default=0, help="continues from epoch number")
 parser.add_argument("--cuda", action="store_true", help="Using GPU to train")
@@ -33,6 +66,7 @@ parser.add_argument("--ckpt_dir", type=str, help="Checkpoint directory")
 parser.add_argument(
     "--nearest", action="store_true", help="Using nearest interpolation"
 )
+parser.add_argument("--fft", action="store_true", help="Using fft filter")
 
 
 opt = parser.parse_args()
@@ -50,7 +84,7 @@ if not os.path.exists(weight_dir):
     os.makedirs(weight_dir)
 
 ## The schedule contains [num of epoches for starting each size][batch size for each size][num of epoches]
-schedule = [[5, 15, 25, 35, 40, 45], [16, 16, 16, 8, 4, 4], [5, 5, 5, 1, 1, 1]]
+schedule = [[5, 15, 25, 35, 40, 45], [16, 16, 16, 8, 4, 2], [5, 5, 5, 1, 1, 1]]
 batch_size = schedule[1][0]
 growing = schedule[2][0]
 epochs = opt.epochs
@@ -61,7 +95,7 @@ lambd = 10
 
 device = torch.device("cuda:0" if (torch.cuda.is_available() and opt.cuda) else "cpu")
 
-transform = transforms.Compose(
+pre_transform = transforms.Compose(
     [
         transforms.Resize(  # no-op if out_res is 256
             out_res,
@@ -72,6 +106,11 @@ transform = transforms.Compose(
         ),
         transforms.CenterCrop(out_res),
         transforms.ToTensor(),
+    ]
+)
+
+post_transform = transforms.Compose(
+    [
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ]
 )
@@ -116,7 +155,7 @@ try:
     c = next(x[0] for x in enumerate(schedule[0]) if x[1] > opt.resume) - 1
     batch_size = schedule[1][c]
     growing = schedule[2][c]
-    dataset = datasets.ImageFolder(data_dir, transform=transform)
+    dataset = datasets.ImageFolder(data_dir, transform=pre_transform)
     # dataset = datasets.CelebA(data_dir, split='all', transform=transform)
     data_loader = DataLoader(
         dataset=dataset,
@@ -137,6 +176,7 @@ try:
 
 except:
     print("Fully Grown\n")
+    # dead code
     c = -1
     batch_size = schedule[1][c]
     growing = schedule[2][c]
@@ -194,15 +234,18 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
 
     for i, samples in enumerate(databar):
         ##  update D
+        samples = samples[0].to(device)
+        if opt.fft:
+            samples = fft_filt(
+                samples, torch.tensor(epoch / epochs, device=samples.device)
+            )
         if size != out_res:
             samples = F.interpolate(
-                samples[0],
+                samples,
                 mode="nearest" if opt.nearest else "bilinear",
                 size=size,
                 antialias=not opt.nearest,
-            ).to(device)
-        else:
-            samples = samples[0].to(device)
+            )
         D_net.zero_grad()
         noise = torch.randn(samples.size(0), latent_size, 1, 1, device=device)
         fake = G_net(noise)
