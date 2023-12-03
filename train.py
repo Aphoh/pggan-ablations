@@ -246,6 +246,8 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
                 size=size,
                 antialias=not opt.nearest,
             )
+        samples = post_transform(samples)  # normalization
+
         D_net.zero_grad()
         noise = torch.randn(samples.size(0), latent_size, 1, 1, device=device)
         fake = G_net(noise)
