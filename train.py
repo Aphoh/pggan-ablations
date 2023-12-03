@@ -48,7 +48,7 @@ def _fft_filt(img: torch.Tensor, pct: torch.Tensor):
     return fft.fft2(fft.fftshift(img_ifft)).real
 
 
-fft_filt = torch.jit.script(_fft_filt)
+# fft_filt = torch.jit.script(_fft_filt)
 
 
 parser = argparse.ArgumentParser()
@@ -84,7 +84,7 @@ if not os.path.exists(weight_dir):
     os.makedirs(weight_dir)
 
 ## The schedule contains [num of epoches for starting each size][batch size for each size][num of epoches]
-schedule = [[5, 15, 25, 35, 40, 45], [16, 16, 16, 8, 4, 2], [5, 5, 5, 1, 1, 1]]
+schedule = [[5, 15, 25, 35, 40, 45], [16, 16, 16, 8, 4, 4], [5, 5, 5, 1, 1, 1]]
 batch_size = schedule[1][0]
 growing = schedule[2][0]
 epochs = opt.epochs
@@ -239,9 +239,15 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
         else:
             samples = samples[0].to(device)
         if opt.fft:
-            samples = fft_filt(
+            h1 = None
+            if i % 100 == 0:
+                h1 = wandb.Histogram(samples.cpu())
+            samples = _fft_filt(
                 samples, torch.tensor(epoch / epochs, device=samples.device)
             )
+            if i % 100 == 0:
+                h2 = wandb.Histogram(samples.cpu())
+                wandb.log({"normal": h1, "fft": h2, "epoch": epoch})
 
         D_net.zero_grad()
         noise = torch.randn(samples.size(0), latent_size, 1, 1, device=device)
