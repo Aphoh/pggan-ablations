@@ -45,7 +45,7 @@ def smooth_highpass_filt(img_ifft, pct):
 def _fft_filt(img: torch.Tensor, pct: torch.Tensor):
     img_ifft = fft.ifftshift(fft.ifft2(img))
     img_ifft = smooth_highpass_filt(img_ifft, pct)
-    return fft.fft2(fft.fftshift(img_ifft)).real.clip(0, 1)
+    return fft.fft2(fft.fftshift(img_ifft)).real
 
 
 fft_filt = torch.jit.script(_fft_filt)
@@ -57,7 +57,7 @@ parser.add_argument(
 )
 parser.add_argument("--epochs", type=int, default=47, help="training epoch number")
 parser.add_argument(
-    "--out_res", type=int, default=128, help="The resolution of final output image"
+    "--out_res", type=int, default=256, help="The resolution of final output image"
 )
 parser.add_argument("--resume", type=int, default=0, help="continues from epoch number")
 parser.add_argument("--cuda", action="store_true", help="Using GPU to train")
@@ -95,7 +95,7 @@ lambd = 10
 
 device = torch.device("cuda:0" if (torch.cuda.is_available() and opt.cuda) else "cpu")
 
-pre_transform = transforms.Compose(
+transform = transforms.Compose(
     [
         transforms.Resize(  # no-op if out_res is 256
             out_res,
@@ -106,11 +106,6 @@ pre_transform = transforms.Compose(
         ),
         transforms.CenterCrop(out_res),
         transforms.ToTensor(),
-    ]
-)
-
-post_transform = transforms.Compose(
-    [
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ]
 )
@@ -155,7 +150,7 @@ try:
     c = next(x[0] for x in enumerate(schedule[0]) if x[1] > opt.resume) - 1
     batch_size = schedule[1][c]
     growing = schedule[2][c]
-    dataset = datasets.ImageFolder(data_dir, transform=pre_transform)
+    dataset = datasets.ImageFolder(data_dir, transform=transform)
     # dataset = datasets.CelebA(data_dir, split='all', transform=transform)
     data_loader = DataLoader(
         dataset=dataset,
@@ -234,18 +229,18 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
 
     for i, samples in enumerate(databar):
         ##  update D
-        samples = samples[0].to(device)
-        if opt.fft:
-            samples = fft_filt(
-                samples, torch.tensor(epoch / epochs, device=samples.device)
-            )
-        samples = post_transform(samples)  # normalization
         if size != out_res:
             samples = F.interpolate(
-                samples,
+                samples[0],
                 mode="nearest" if opt.nearest else "bilinear",
                 size=size,
                 antialias=not opt.nearest,
+            ).to(device)
+        else:
+            samples = samples[0].to(device)
+        if opt.fft:
+            samples = fft_filt(
+                samples, torch.tensor(epoch / epochs, device=samples.device)
             )
 
         D_net.zero_grad()
@@ -271,11 +266,8 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
 
         D_loss = fake_out.mean() - real_out.mean() + gradient_penalty
 
-        if not torch.isnan(D_loss):
-            D_loss.backward()
-            D_optimizer.step()
-        else:
-            D_loss = torch.tensor(0.0)
+        D_loss.backward()
+        D_optimizer.step()
 
         ##	update G
 
@@ -284,11 +276,8 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
 
         G_loss = -fake_out.mean()
 
-        if not torch.isnan(G_loss):
-            G_loss.backward()
-            G_optimizer.step()
-        else:
-            G_loss = torch.tensor(0.0)
+        G_loss.backward()
+        G_optimizer.step()
 
         ##############
 
