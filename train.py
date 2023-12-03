@@ -275,7 +275,7 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
             D_loss.backward()
             D_optimizer.step()
         else:
-            D_loss = 0
+            D_loss = torch.tensor(0.0)
 
         ##	update G
 
@@ -288,7 +288,7 @@ for epoch in range(1 + opt.resume, opt.epochs + 1):
             G_loss.backward()
             G_optimizer.step()
         else:
-            G_loss = 0
+            G_loss = torch.tensor(0.0)
 
         ##############
 
